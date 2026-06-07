@@ -33,7 +33,7 @@
 ## Установка
 
 ```bash
-git clone https://github.com/<you>/claude-code-telegram-channel.git
+git clone https://github.com/Pishek/claude-code-telegram-channel.git
 ```
 
 Затем в сессии Claude Code:
