@@ -949,17 +949,18 @@ async function handleInbound(
   // relaying as chat. The sender is already gate()-approved at this point
   // (non-allowlisted senders were dropped above), so we trust the reply.
   const permMatch = PERMISSION_REPLY_RE.exec(text)
-  // Bare "yes"/"no"/"да"/"нет" (no id) resolves the most recent pending
-  // permission — usable from Apple Watch dictation where the buttons can't be
-  // tapped and the request_id is never shown. Trailing dictation punctuation
-  // ("Да.", "Yes!") is tolerated. Only fires while a permission is pending.
+  // Bare "yes"/"ok"/"no"/"да"/"ок"/"нет" (no id) resolves the most recent
+  // pending permission — usable from Apple Watch dictation where the buttons
+  // can't be tapped and the request_id is never shown. Case-insensitive (incl.
+  // Cyrillic) and trailing dictation punctuation ("Да.", "Ок!") is tolerated.
+  // Only fires while a permission is pending.
   const bareMatch = !permMatch && latestPermissionId
-    ? /^\s*(y|yes|да|n|no|нет)\s*[.!?,…]*\s*$/i.exec(text)
+    ? /^\s*(y|yes|ok|да|ок|n|no|нет)\s*[.!?,…]*\s*$/i.exec(text)
     : null
   if (permMatch || bareMatch) {
     const m = (permMatch ?? bareMatch)!
     const request_id = permMatch ? permMatch[2]!.toLowerCase() : latestPermissionId!
-    const behavior = /^(y|yes|да)$/i.test(m[1]!.toLowerCase()) ? 'allow' : 'deny'
+    const behavior = /^(y|yes|ok|да|ок)$/i.test(m[1]!.toLowerCase()) ? 'allow' : 'deny'
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },
