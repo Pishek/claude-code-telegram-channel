@@ -1,0 +1,82 @@
+--- a/server.ts (upstream telegram@claude-plugins-official 0.0.6)
++++ b/server.ts (cc-channels/tg, patched)
+@@ -411,6 +411,27 @@
+ // Stores full permission details for "See more" expansion keyed by request_id.
+ const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+ 
++// Tracks the most recent unresolved permission so a bare "yes"/"no" reply
++// (e.g. dictated from an Apple Watch, where inline buttons aren't tappable)
++// can resolve it without needing the 5-char request_id. Cleared on resolve.
++let latestPermissionId: string | null = null
++
++// Compact one-glance preview of the tool input for the initial permission
++// message, so the user sees file_path/command without pressing "See more".
++function formatPermPreview(input_preview: string): string {
++  let s = input_preview
++  try {
++    const o = JSON.parse(input_preview)
++    if (o && typeof o === 'object') {
++      s = Object.entries(o)
++        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
++        .join('\n')
++    }
++  } catch {}
++  s = s.trim()
++  return s.length > 300 ? s.slice(0, 300) + '…' : s
++}
++
+ // Receive permission_request from CC → format → send to all allowlisted DMs.
+ // Groups are intentionally excluded — the security thread resolution was
+ // "single-user mode for official plugins." Anyone in access.allowFrom
+@@ -428,8 +449,10 @@
+   async ({ params }) => {
+     const { request_id, tool_name, description, input_preview } = params
+     pendingPermissions.set(request_id, { tool_name, description, input_preview })
++    latestPermissionId = request_id
+     const access = loadAccess()
+-    const text = `🔐 Permission: ${tool_name}`
++    const preview = formatPermPreview(input_preview)
++    const text = preview ? `🔐 Permission: ${tool_name}\n${preview}` : `🔐 Permission: ${tool_name}`
+     const keyboard = new InlineKeyboard()
+       .text('See more', `perm:more:${request_id}`)
+       .text('✅ Allow', `perm:allow:${request_id}`)
+@@ -774,6 +797,7 @@
+     params: { request_id, behavior },
+   })
+   pendingPermissions.delete(request_id)
++  if (latestPermissionId === request_id) latestPermissionId = null
+   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
+   await ctx.answerCallbackQuery({ text: label }).catch(() => {})
+   // Replace buttons with the outcome so the same request can't be answered
+@@ -925,16 +949,25 @@
+   // relaying as chat. The sender is already gate()-approved at this point
+   // (non-allowlisted senders were dropped above), so we trust the reply.
+   const permMatch = PERMISSION_REPLY_RE.exec(text)
+-  if (permMatch) {
++  // Bare "yes"/"no"/"да"/"нет" (no id) resolves the most recent pending
++  // permission — usable from Apple Watch dictation where the buttons can't be
++  // tapped and the request_id is never shown. Trailing dictation punctuation
++  // ("Да.", "Yes!") is tolerated. Only fires while a permission is pending.
++  const bareMatch = !permMatch && latestPermissionId
++    ? /^\s*(y|yes|да|n|no|нет)\s*[.!?,…]*\s*$/i.exec(text)
++    : null
++  if (permMatch || bareMatch) {
++    const m = (permMatch ?? bareMatch)!
++    const request_id = permMatch ? permMatch[2]!.toLowerCase() : latestPermissionId!
++    const behavior = /^(y|yes|да)$/i.test(m[1]!.toLowerCase()) ? 'allow' : 'deny'
+     void mcp.notification({
+       method: 'notifications/claude/channel/permission',
+-      params: {
+-        request_id: permMatch[2]!.toLowerCase(),
+-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
+-      },
++      params: { request_id, behavior },
+     })
++    pendingPermissions.delete(request_id)
++    if (latestPermissionId === request_id) latestPermissionId = null
+     if (msgId != null) {
+-      const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
++      const emoji = behavior === 'allow' ? '✅' : '❌'
+       void bot.api.setMessageReaction(chat_id, msgId, [
+         { type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] },
+       ]).catch(() => {})

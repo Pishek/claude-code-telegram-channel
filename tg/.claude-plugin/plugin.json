@@ -1,0 +1,11 @@
+{
+  "name": "tg",
+  "description": "Telegram channel for Claude Code (patched) \u2014 messaging bridge with access control, permission details inline + bare yes/no reply. Manage pairing, allowlists, and policy via /tg:access.",
+  "version": "0.0.6",
+  "keywords": [
+    "telegram",
+    "messaging",
+    "channel",
+    "mcp"
+  ]
+}
