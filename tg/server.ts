@@ -86,6 +86,14 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 const bot = new Bot(TOKEN)
 let botUsername = ''
 
+// Per-process session identity. Only one Claude Code session bridges the bot at
+// a time (pid-lock), but its messages pile up in the same chat as previous
+// sessions' — so history is hard to attribute. Claude Code doesn't hand the
+// plugin a session id, so we mint our own short tag and read the working dir;
+// a takeover header (see onStart) then separates sessions in the chat.
+const SESSION_TAG = randomBytes(2).toString('hex')
+const PROJECT_NAME = process.cwd().split(sep).filter(Boolean).pop() ?? '~'
+
 type PendingEntry = {
   senderId: string
   chatId: string
@@ -1038,6 +1046,16 @@ void (async () => {
           attempt = 0
           botUsername = info.username
           process.stderr.write(`telegram channel: polling as @${info.username}\n`)
+          // Announce takeover so old vs. new sessions are tellable apart in the
+          // chat. Fires on each successful (re)start of polling; no-op until a
+          // chat is paired (allowFrom empty).
+          const now = new Date()
+          const p2 = (n: number) => String(n).padStart(2, '0')
+          const when = `${p2(now.getDate())}.${p2(now.getMonth() + 1)} ${p2(now.getHours())}:${p2(now.getMinutes())}`
+          const header = `▶️ New session · 📁 ${PROJECT_NAME} · #${SESSION_TAG} · ${when}`
+          for (const chat_id of loadAccess().allowFrom) {
+            void bot.api.sendMessage(chat_id, header).catch(() => {})
+          }
           void bot.api.setMyCommands(
             [
               { command: 'start', description: 'Welcome and setup guide' },
