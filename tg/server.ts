@@ -89,10 +89,34 @@ let botUsername = ''
 // Per-process session identity. Only one Claude Code session bridges the bot at
 // a time (pid-lock), but its messages pile up in the same chat as previous
 // sessions' — so history is hard to attribute. Claude Code doesn't hand the
-// plugin a session id, so we mint our own short tag and read the working dir;
-// a takeover header (see onStart) then separates sessions in the chat.
-const SESSION_TAG = randomBytes(2).toString('hex')
-const PROJECT_NAME = process.cwd().split(sep).filter(Boolean).pop() ?? '~'
+// plugin a session id, so we mint our own short tag and read the project dir;
+// a takeover header (see onStart) plus a per-message tag then make each
+// session's messages tellable apart and findable via Telegram's #<tag> search.
+
+// Telegram only turns a hashtag into a clickable/searchable link if it contains
+// a letter — a purely numeric tag like #2024 renders as plain text. 4 hex chars
+// are all-digit ~15% of the time, so reroll until at least one a-f letter shows.
+function mintSessionTag(): string {
+  let t = randomBytes(2).toString('hex')
+  while (!/[a-f]/.test(t)) t = randomBytes(2).toString('hex')
+  return t
+}
+const SESSION_TAG = mintSessionTag()
+
+// CLAUDE_PROJECT_DIR is injected by Claude Code into the MCP server's env and
+// points at the user's launch directory (the same value hooks receive).
+// process.cwd() can't be used: .mcp.json starts us with --cwd
+// ${CLAUDE_PLUGIN_ROOT}, so cwd is always the plugin folder ("tg"). Fall back to
+// cwd only if the env var is absent (older Claude Code) — no worse than before.
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR ?? process.cwd()
+const PROJECT_NAME = PROJECT_DIR.split(sep).filter(Boolean).pop() ?? '~'
+
+// Header line prepended to every outbound assistant message so the whole session
+// is findable via Telegram's #<tag> search. '#' is a MarkdownV2 special char, so
+// escape it as \# in markdown mode — it still renders as a clickable #tag.
+function sessionHeader(markdown: boolean): string {
+  return (markdown ? `\\#${SESSION_TAG}` : `#${SESSION_TAG}`) + '\n'
+}
 
 type PendingEntry = {
   senderId: string
@@ -460,7 +484,9 @@ mcp.setNotificationHandler(
     latestPermissionId = request_id
     const access = loadAccess()
     const preview = formatPermPreview(input_preview)
-    const text = preview ? `🔐 Permission: ${tool_name}\n${preview}` : `🔐 Permission: ${tool_name}`
+    // Sent as plain text (no parse_mode) — bare #tag, no MarkdownV2 escaping.
+    const head = `🔐 Permission: ${tool_name} #${SESSION_TAG}`
+    const text = preview ? `${head}\n${preview}` : head
     const keyboard = new InlineKeyboard()
       .text('See more', `perm:more:${request_id}`)
       .text('✅ Allow', `perm:allow:${request_id}`)
@@ -573,7 +599,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
+        // Prefix the session tag to every chunk so the whole reply is findable
+        // by #<tag> search. Reserve the header's length from the chunk budget so
+        // header + chunk never exceeds Telegram's hard cap.
+        const header = sessionHeader(parseMode != null)
+        const effLimit = Math.max(1, limit - header.length)
+        const chunks = chunk(text, effLimit, mode).map(c => header + c)
         const sentIds: number[] = []
 
         try {
@@ -647,10 +678,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         assertAllowedChat(args.chat_id as string)
         const editFormat = (args.format as string | undefined) ?? 'text'
         const editParseMode = editFormat === 'markdownv2' ? 'MarkdownV2' as const : undefined
+        // Keep the session tag on edited messages too, so they stay findable.
+        const editedText = sessionHeader(editParseMode != null) + (args.text as string)
         const edited = await bot.api.editMessageText(
           args.chat_id as string,
           Number(args.message_id),
-          args.text as string,
+          editedText,
           ...(editParseMode ? [{ parse_mode: editParseMode }] : []),
         )
         const id = typeof edited === 'object' ? edited.message_id : args.message_id
@@ -788,7 +821,7 @@ bot.on('callback_query:data', async ctx => {
       prettyInput = input_preview
     }
     const expanded =
-      `🔐 Permission: ${tool_name}\n\n` +
+      `🔐 Permission: ${tool_name} #${SESSION_TAG}\n\n` +
       `tool_name: ${tool_name}\n` +
       `description: ${description}\n` +
       `input_preview:\n${prettyInput}`
